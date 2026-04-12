@@ -83,7 +83,9 @@ public:
     MarketRegime update(const TickData& tick, double now) {
         if (last_reset_time_ == 0.0) last_reset_time_ = now;
         
-        double b_coeff = ou_estimator_.update(tick.price);
+        // [변경] b_coeff를 멤버에 저장해서 외부에서 접근 가능하게
+        last_b_coeff_ = ou_estimator_.update(tick.price);
+
         if (tick.price > max_price_1m_) max_price_1m_ = tick.price;
         if (tick.price < min_price_1m_) min_price_1m_ = tick.price;
         
@@ -92,39 +94,45 @@ public:
             else             taker_sell_vol_ += (tick.price * tick.volume);
         }
 
-        // 레짐 판독기 윈도우 사이즈
         if (now - last_reset_time_ >= conf_.reset_interval_sec) {
             double price_diff = max_price_1m_ - min_price_1m_;
-            double total_vol = taker_buy_vol_ + taker_sell_vol_;
-            double net_delta = std::abs(taker_buy_vol_ - taker_sell_vol_);
+            double total_vol  = taker_buy_vol_ + taker_sell_vol_;
+            double net_delta  = std::abs(taker_buy_vol_ - taker_sell_vol_);
 
-            MarketRegime new_regime = MarketRegime::CHOPPY; // 기본값
+            MarketRegime new_regime = MarketRegime::UNKNOWN; // 기본값
 
             // 1. TOXIC (광기장)
-            if (price_diff >= min_price_1m_ * (conf_.toxic_vol_pct / 100.0) || net_delta > conf_.toxic_net_delta) {
+            if (price_diff >= min_price_1m_ * (conf_.toxic_vol_pct / 100.0) ||
+                net_delta > conf_.toxic_net_delta) {
                 new_regime = MarketRegime::TOXIC;
             }
             // 2. TRENDING (추세장)
             else if (price_diff >= min_price_1m_ * (conf_.trending_vol_pct / 100.0) && 
                      net_delta > total_vol * conf_.trending_delta_ratio && 
-                     b_coeff > conf_.trending_ou_thresh) {
+                     last_b_coeff_ > conf_.trending_ou_thresh) {
                 new_regime = MarketRegime::TRENDING;
             }
-
-            if (new_regime != current_regime_) {
-                const char* regime_names[] = {"UNKNOWN", "CHOPPY", "TRENDING", "TOXIC"};
-                LOG(">>> [REGIME SHIFT] %s -> %s", regime_names[(int)current_regime_], regime_names[(int)new_regime]);
+            // 3. CHOPPY
+            else if (last_b_coeff_ < conf_.trending_ou_thresh) {
+                new_regime = MarketRegime::CHOPPY;
             }
             
             current_regime_ = new_regime;
 
-            min_price_1m_ = tick.price; max_price_1m_ = tick.price;
-            taker_buy_vol_ = 0; taker_sell_vol_ = 0;
+            min_price_1m_    = tick.price;
+            max_price_1m_    = tick.price;
+            taker_buy_vol_   = 0;
+            taker_sell_vol_  = 0;
             last_reset_time_ = now;
         }
         
         return current_regime_;
     }
     
-    MarketRegime get_regime() const { return current_regime_; }
+    MarketRegime get_regime()      const { return current_regime_; }
+
+    // [진단용] 현재 틱의 b_coeff 반환
+    // 이 값이 1.0에 가까울수록 random walk(추세),
+    // 낮을수록 평균회귀(mean-reverting) 프로세스
+    double get_last_b_coeff()      const { return last_b_coeff_; }
 };

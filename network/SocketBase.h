@@ -188,6 +188,8 @@ public:
         }
     }
 
+    bool is_connected() const { return connected; }
+
 protected:
 
     void send_frame(const std::string& data, unsigned char opcode) {
