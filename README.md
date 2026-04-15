@@ -22,3 +22,14 @@ The engine was tested in the Binance ETH Futures market.
 * **Conclusion:** Software-level nanosecond optimizations cannot overcome the **3ms** physical network distance between data centers and the structural disadvantage of retail taker fees.
 
 Open-sourced for architectural reference.
+
+
+
+## Dependencies
+* C++20 Compiler (GCC/Clang)
+* [simdjson](https://github.com/simdjson/simdjson) (For AVX2 accelerated JSON parsing)
+
+## Build
+No CMake Just the raw compiler command:
+```bash
+g++ -O3 -march=native -std=c++17 -pthread main.cpp simdjson.cpp -o delta_hft -lssl -lcrypto
