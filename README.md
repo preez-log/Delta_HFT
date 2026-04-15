@@ -26,7 +26,7 @@ Open-sourced for architectural reference.
 
 
 ## Dependencies
-* C++20 Compiler (GCC/Clang)
+* C++17 or later Compiler (GCC/Clang)
 * [simdjson](https://github.com/simdjson/simdjson) (For AVX2 accelerated JSON parsing)
 
 ## Build
