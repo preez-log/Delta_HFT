@@ -1,35 +1,146 @@
-# Delta_HFT
+# Delta HFT — Low-Latency Trading System Reference
 
-A low-latency crypto trading engine built in C++.
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Language: C++17](https://img.shields.io/badge/Language-C%2B%2B17-blue.svg)
+![Platform: Linux](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)
 
-## TL;DR
-* **Dev Time:** 30 days.
-* **Focus:** Software-level micro-optimization (Bare-metal).
-* **Result:** System executed as designed. Live trading yielded no profit due to cross-cloud network latency.
+A low-latency systems engineering reference applied to cryptocurrency markets.
+Demonstrates multi-regime strategy routing, lock-free config hot-swap, and
+SIMD-accelerated state estimation under microsecond constraints.
 
-## Architecture & Optimizations
-* **Hardware Profiling:** __rdtsc intrinsic for sub-nanosecond timestamping.
-* **Concurrency:** Lock-free queues with alignas(64) padding to prevent L1 cache false sharing.
-* **CPU Management:** Core pinning to isolate the hot path from OS context switching.
-* **Math Operations:** SIMD AVX2 (_mm256_fmadd_pd) for vectorized signal processing.
-* **Memory:** Zero-allocation on the hot path.
+Built in 30 days as an architectural exercise. Open-sourced for educational
+and reference purposes.
 
-## Post-Mortem
-The engine was tested in the Binance ETH Futures market.
-* **Setup:** Engine deployed on GCP Tokyo (asia-northeast1); Binance matching engine located in AWS Tokyo (ap-northeast-1).
-* **Latency:** **~5ms** cross-cloud network latency observed.
-* **Competitors:** Institutional market makers utilize AWS Colocation (same Availability Zone) with <0.1ms latency.
-* **Conclusion:** Software-level nanosecond optimizations cannot overcome the **3ms** physical network distance between data centers and the structural disadvantage of retail taker fees.
+---
 
-Open-sourced for architectural reference.
+## Scope & Intent
 
+This repository is a **systems engineering reference**, not a deployable
+trading strategy. Strategy parameters (thresholds, regime classifier weights,
+risk limits) are intentionally omitted from this public release.
 
+Retail HFT on public cloud infrastructure faces a fundamental physical barrier:
+institutional market makers operate in colocated facilities with sub-millisecond
+latency to exchange matching engines, while public cloud deployments incur
+~5ms cross-datacenter latency regardless of software optimization. This
+project's value lies in its architecture, not its P&L.
+
+---
+
+## Architecture — 4-Core Pinned Design
+
+The entire engine runs on four dedicated CPU cores with zero mutex overhead
+on the hot path.
+
+| Core | Thread            | Role                                                       |
+|------|-------------------|------------------------------------------------------------|
+| 0    | Config Watchdog   | `inotify` file watch → `atomic<Config*>` swap (RCU pattern)|
+| 1    | Market Thread     | Binance WebSocket `bookTicker` + `aggTrade` ingestion      |
+| 2    | Trade Thread      | Order fill / cancel WebSocket ingestion                    |
+| 3    | Engine Loop       | Tick → regime detection → strategy → order management      |
+
+---
+
+## Technical Highlights
+
+### Concurrency
+
+- **Lock-Free Config Hot-Swap** : `inotify` detects `config.json` changes;
+  `g_active_config.exchange(new_config)` replaces the entire config in a
+  single atomic operation. Full parameter tuning without bot restart — no
+  mutex on the hot path (poor man's RCU).
+
+- **Zero-Allocation Hot Path** : Order IDs generated directly into stack
+  buffers via `std::to_chars`. Prefix matching uses 4-byte integer comparison
+  (`0x5f746e65 == "ent_"`) instead of `strcmp`. Order response parsing via
+  `simdjson` SIMD JSON parser.
+
+- **Cache-Line Padding** : `alignas(64)` on shared atomics to prevent L1
+  false sharing across cores.
+
+### Timing & Profiling
+
+- **Hardware Timestamping** : `__rdtsc` intrinsic for sub-nanosecond
+  latency measurement, cross-calibrated against `CLOCK_MONOTONIC_RAW`.
+
+- **Core Pinning** : Each thread bound to a dedicated physical core via
+  `pthread_setaffinity_np`, isolating the hot path from OS context switching.
+
+### Strategy Routing (Structural Reference)
+
+Three structurally distinct engines demonstrate different mathematical
+approaches to market microstructure. The regime classifier routes ticks to
+the appropriate engine every 60 seconds based on volatility, taker delta,
+and OU β coefficient.
+
+- **RollingZEngine (CHOPPY regime)** — Triple-filter mean reversion: rolling
+  Z-score threshold + EMA OU coefficient gate + Order Flow Imbalance
+  direction confirmation. `RollingZScore` uses O(1) incremental `sum` /
+  `sum_sq` updates with periodic full recalculation to reset floating-point
+  drift.
+
+- **KinematicEngine (TRENDING regime)** — Price modeled as a physical system
+  `[position, velocity, acceleration]`. `PhysicsState` updated via AVX2
+  `_mm256_fmadd_pd` Kalman step executed in a single 256-bit register. Jerk
+  condition (rate of change of acceleration) gates entry to accelerating
+  trends only.
+
+- **HawkesEngine (TOXIC regime)** — Self-exciting Hawkes Process models
+  event clustering. `hawkes_energy` increments by `alpha` per event and
+  decays as `exp(-beta*dt)`. Energy threshold breach triggers OBI-directional
+  entry to capture post-shock aftershocks.
+
+### Order Management
+
+- **6-State FSM** : `NONE → PENDING_ENTRY → LONG/SHORT → PENDING_EXIT →
+  PENDING_EMERGENCY`. Maker chase, two-tier stop loss (maker chase → market
+  order fallback), trailing stop.
+
+- **Ghost Fix** : REST API resync triggered on WebSocket silence detection
+  to recover from missed order events.
+
+- **Graceful Shutdown** : First SIGINT blocks new entries and attempts maker
+  exit. Market order forced after 10s timeout. Second SIGINT triggers
+  immediate termination.
+
+---
+
+## What This Project Demonstrates
+
+- Hardware-level profiling and timing primitives (`__rdtsc`, core pinning,
+  cache-line padding)
+- Lock-free concurrency across multiple threads with atomic RCU patterns
+- SIMD vectorization of non-trivial math (Kalman state update in a single
+  AVX2 FMA instruction)
+- Zero-allocation hot paths with compile-time optimized string handling
+- Multi-strategy routing driven by online market regime classification
+- State machine design for asynchronous order lifecycle under network
+  failures
+
+---
 
 ## Dependencies
-* C++17 or later Compiler (GCC/Clang)
-* [simdjson](https://github.com/simdjson/simdjson) (For AVX2 accelerated JSON parsing)
+
+- C++17 or later compiler (GCC / Clang)
+- [simdjson](https://github.com/simdjson/simdjson) — AVX2-accelerated JSON parser
+- OpenSSL — WebSocket TLS + HMAC signing
 
 ## Build
-No CMake Just the raw compiler command:
+
 ```bash
 g++ -O3 -march=native -std=c++17 -pthread main.cpp simdjson.cpp -o delta_hft -lssl -lcrypto
+```
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) file.
+
+---
+
+## Related Projects
+
+- [Delta Cast](https://github.com/preez-log/delta-cast) — Kernel-level virtual ASIO driver
+- Delta Engine — Custom D3D11 game engine (USPTO Patent Pending #19/641,687)
+
